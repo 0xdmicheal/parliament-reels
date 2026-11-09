@@ -18,6 +18,26 @@ const CHROME = [
 ].find((p) => p && existsSync(p));
 const FFMPEG = process.env.FFMPEG_PATH || 'ffmpeg';
 
+// GitHub's machines have no GPU, and there the background's three blurred light pools (#ocean, blur(90px)) cost about
+// three quarters of every frame. While recording, each pool is blurred once into an image with the same Gaussian blur
+// and then drifts as that image, so it looks the same but is cheap to draw. The TV page itself is unchanged.
+const CHEAP_BLUR = `(function () {
+  function swap(o) {
+    if (o.__cheap) return; o.__cheap = 1;
+    var css = '';
+    Array.prototype.forEach.call(o.children, function (el, i) {
+      var cs = getComputedStyle(el), w = parseFloat(cs.width), h = parseFloat(cs.height), R = 90, P = R * 3;
+      var c = document.createElement('canvas'); c.width = Math.ceil(w + 2 * P); c.height = Math.ceil(h + 2 * P);
+      var g = c.getContext('2d'); g.filter = 'blur(' + R + 'px)'; g.fillStyle = cs.backgroundColor;
+      g.beginPath(); g.ellipse(P + w / 2, P + h / 2, w / 2, h / 2, 0, 0, Math.PI * 2); g.fill();
+      css += '#ocean i:nth-child(' + (i + 1) + '){filter:none!important;border-radius:0!important;box-sizing:content-box!important;padding:' + P + 'px!important;margin:-' + P + 'px!important;background:url(' + c.toDataURL() + ') center/100% 100% no-repeat!important}';
+    });
+    var st = document.createElement('style'); st.textContent = css; document.head.appendChild(st);
+  }
+  new MutationObserver(function () { var o = document.getElementById('ocean'); if (o && o.children.length) swap(o); })
+    .observe(document, { childList: true, subtree: true });
+})();`;
+
 export const SIZES = { reel: { w: 1080, h: 1920 }, post: { w: 1080, h: 1350 } };
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -44,7 +64,11 @@ function cdp(wsUrl) {
     send(method, params = {}, sessionId) {
       const n = ++id;
       ws.send(JSON.stringify({ id: n, method, params, sessionId }));
-      return new Promise((ok, fail) => waiting.set(n, { ok, fail }));
+      // Nothing may wait forever: a call Chrome never answers fails, and the piece is recorded again.
+      return new Promise((ok, fail) => {
+        const t = setTimeout(() => { waiting.delete(n); fail(new Error(method + ' timed out')); }, 90000);
+        waiting.set(n, { ok: (v) => { clearTimeout(t); ok(v); }, fail: (e) => { clearTimeout(t); fail(e); } });
+      });
     },
     once(method, sessionId, timeoutMs = 30000) {
       return new Promise((ok, fail) => {
@@ -104,7 +128,7 @@ export async function recordReel({ url, secs = 15, from = 0, fps = 30, size = SI
   const chrome = spawn(CHROME, [
     '--headless=new', '--remote-debugging-port=0', `--user-data-dir=${profile}`,
     `--window-size=${REEL.w},${REEL.h}`, '--hide-scrollbars', '--mute-audio', '--force-device-scale-factor=1',
-    '--no-first-run', '--no-default-browser-check', ...(process.env.CI ? ['--no-sandbox', '--disable-dev-shm-usage'] : []), 'about:blank',
+    '--no-first-run', '--no-default-browser-check', ...(process.env.CI ? ['--no-sandbox', '--disable-dev-shm-usage'] : []), ...(process.env.REEL_NO_GPU ? ['--disable-gpu'] : []), 'about:blank',
   ], { stdio: 'ignore' });
   let client = null;
   let enc = null;
@@ -115,6 +139,7 @@ export async function recordReel({ url, secs = 15, from = 0, fps = 30, size = SI
     const { sessionId } = await client.send('Target.attachToTarget', { targetId, flatten: true });
     const send = (m, p) => client.send(m, p, sessionId);
     await send('Page.enable');
+    if (process.env.REEL_GPU_BLUR !== '1') await send('Page.addScriptToEvaluateOnNewDocument', { source: CHEAP_BLUR });
     await send('Emulation.setDeviceMetricsOverride', { width: REEL.w, height: REEL.h, deviceScaleFactor: 1, mobile: false });
     // Moves the page's clock on by `ms`; a pending fetch (data, photos, fonts) holds the clock until it lands.
     const advance = async (ms) => {
@@ -138,8 +163,8 @@ export async function recordReel({ url, secs = 15, from = 0, fps = 30, size = SI
     const frames = Math.round(secs * fps);
     const step = 1000 / fps;
     // CSS animations and transitions run on Chrome's own clock, not the virtual one, so just before each frame every
-    // animation is set to where the virtual clock says it should be (left running: a page with nothing moving
-    // produces no new frame, and the screenshot would wait for one). Everything on the page at the first frame
+    // animation is set to where the virtual clock says it should be and slowed to 1/1000 speed. (At full speed, a slow
+    // machine lets them run ahead between frames, and anything chained to their end starts early.) Everything on the page at the first frame
     // starts from its beginning there, so the reel opens with the design's full entrance; an animation that
     // appears later is taken to have started at the previous frame. The moving background (#ocean, #iso) starts
     // bgOffsetMs in instead, so when several designs are joined it carries on across the cut without a jump.
@@ -147,7 +172,9 @@ export async function recordReel({ url, secs = 15, from = 0, fps = 30, size = SI
       var now = performance.now();
       document.getAnimations().forEach(function (a) {
         if (a.__v0 === undefined) { var t = a.effect && a.effect.target; a.__v0 = now - (t && t.closest && t.closest('#ocean, #iso') ? ${bgOffsetMs} : 0); }
-        try { a.currentTime = now - a.__v0; } catch (e) {}
+        // Barely running (1/1000 speed): still running, so Chrome keeps drawing frames, but a slow machine can no
+        // longer let it run ahead between frames.
+        try { if (a.playbackRate !== 0.001) a.playbackRate = 0.001; a.currentTime = now - a.__v0; } catch (e) {}
       });
     })()` });
     // A piece that starts `from` seconds into the design first runs the clock there frame by frame, exactly as a

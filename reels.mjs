@@ -10,7 +10,7 @@
 // spec: { items: [{ scene: 1..12 | 'outro', secs }], size: 'post' | 'reel', qr, motion, origin }
 import { spawn } from 'node:child_process';
 import { mkdir, readFile, readdir, writeFile } from 'node:fs/promises';
-import { join } from 'node:path';
+import { join, resolve } from 'node:path';
 import { recordReel, SIZES } from './record.mjs';
 
 export const MACHINES = 20; // the free plan runs 20 jobs at once
@@ -70,6 +70,7 @@ async function work(spec, k, out) {
 }
 
 async function joinParts(dir, out) {
+  dir = resolve(dir);
   const parts = (await readdir(dir, { recursive: true })).filter((f) => /part-\d+\.mp4$/.test(f))
     .sort((a, b) => Number(a.match(/part-(\d+)/)[1]) - Number(b.match(/part-(\d+)/)[1]));
   if (!parts.length) throw new Error('no parts');
