@@ -51,7 +51,9 @@ jobs:
       - run: node reels.mjs join parts reel.mp4
       - env: { GH_TOKEN: '${{ github.token }}' }
         run: |
-          gh release create "reel-${{ inputs.id }}" reel.mp4 --title "reel ${{ inputs.id }}" --notes "Recorded by Poster Studio" --latest=false
+          name=$(node -e "const s = JSON.parse(process.env.SPEC); process.stdout.write((s.name || 'reel.mp4').replace(/[^A-Za-z0-9._-]/g, '-'))")
+          mv reel.mp4 "$name"
+          gh release create "reel-${{ inputs.id }}" "$name" --title "reel ${{ inputs.id }}" --notes "Recorded by Poster Studio" --latest=false
           # Recordings are kept for three days.
           gh release list --limit 200 --json tagName,createdAt --jq '.[] | select(.tagName | startswith("reel-")) | select((now - (.createdAt | fromdateiso8601)) > 259200) | .tagName' \
             | while read -r t; do gh release delete "$t" --yes --cleanup-tag || true; done
