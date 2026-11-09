@@ -99,6 +99,7 @@ function encoder(fps, file) {
 export async function recordReel({ url, secs = 15, from = 0, fps = 30, size = SIZES.reel, bgOffsetMs = 0, onProgress = () => {} }) {
   const REEL = size;
   if (!CHROME) throw new Error('Google Chrome not found (set CHROME_PATH)');
+  const T0 = Date.now(), lap = {}; const mark = (k) => { lap[k] = ((Date.now() - T0) / 1000).toFixed(1); };
   const profile = await mkdtemp(join(tmpdir(), 'reel-'));
   const chrome = spawn(CHROME, [
     '--headless=new', '--remote-debugging-port=0', `--user-data-dir=${profile}`,
@@ -132,6 +133,7 @@ export async function recordReel({ url, secs = 15, from = 0, fps = 30, size = SI
       if (waited > 40000) throw new Error('The design did not come on (no data for it right now?)');
       await advance(50);
     }
+    mark('on');
     enc = encoder(fps, join(profile, 'reel.mp4'));
     const frames = Math.round(secs * fps);
     const step = 1000 / fps;
@@ -154,6 +156,7 @@ export async function recordReel({ url, secs = 15, from = 0, fps = 30, size = SI
       await sync();
       await advance(step);
     }
+    mark('ff');
     for (let i = 0; i < frames; i += 1) {
       await sync();
       const shot = await send('Page.captureScreenshot', { format: 'jpeg', quality: 94, optimizeForSpeed: true });
@@ -161,7 +164,11 @@ export async function recordReel({ url, secs = 15, from = 0, fps = 30, size = SI
       onProgress((i + 1) / frames);
       await advance(step);
     }
-    return await enc.finish();
+    mark('shot');
+    const out = await enc.finish();
+    mark('enc');
+    if (process.env.REEL_TIMING) console.error('timing (s since start):', JSON.stringify(lap), 'from', from, 'secs', secs);
+    return out;
   } catch (e) {
     if (enc) { try { enc.proc.kill(); } catch {} }
     throw e;
