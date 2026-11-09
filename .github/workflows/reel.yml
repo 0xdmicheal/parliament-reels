@@ -1,0 +1,57 @@
+# Records one Poster Studio video on up to 20 machines at once, joins the pieces and publishes the MP4 as a release.
+# Started by parliament-widget's /api/reel-cloud with inputs { id, spec }; the finished file is the release reel-<id>.
+name: reel
+run-name: reel ${{ inputs.id }}
+
+on:
+  workflow_dispatch:
+    inputs:
+      id: { description: 'Recording id', required: true }
+      spec: { description: 'JSON: { items, size, qr, motion, origin }', required: true }
+
+permissions:
+  contents: write
+
+env:
+  TZ: Asia/Ulaanbaatar
+  SPEC: ${{ inputs.spec }}
+
+jobs:
+  record:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    strategy:
+      fail-fast: true
+      matrix:
+        k: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19]
+    steps:
+      - uses: actions/checkout@v4
+      - id: mine
+        run: |
+          echo "$SPEC" > spec.json
+          n=$(node -e "import('./reels.mjs').then(m => console.log(m.plan(JSON.parse(require('fs').readFileSync('spec.json','utf8'))).machines))")
+          echo "machines=$n" >> "$GITHUB_OUTPUT"
+      - if: matrix.k < fromJSON(steps.mine.outputs.machines)
+        run: command -v ffmpeg || (sudo apt-get update -qq && sudo apt-get install -y -qq --no-install-recommends ffmpeg)
+      - if: matrix.k < fromJSON(steps.mine.outputs.machines)
+        run: node reels.mjs work spec.json ${{ matrix.k }} parts
+      - if: matrix.k < fromJSON(steps.mine.outputs.machines)
+        uses: actions/upload-artifact@v4
+        with: { name: 'part-${{ matrix.k }}', path: parts, retention-days: 1, compression-level: 0 }
+
+  join:
+    needs: record
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with: { pattern: 'part-*', path: parts }
+      - run: command -v ffmpeg || (sudo apt-get update -qq && sudo apt-get install -y -qq --no-install-recommends ffmpeg)
+      - run: node reels.mjs join parts reel.mp4
+      - env: { GH_TOKEN: '${{ github.token }}' }
+        run: |
+          gh release create "reel-${{ inputs.id }}" reel.mp4 --title "reel ${{ inputs.id }}" --notes "Recorded by Poster Studio" --latest=false
+          # Recordings are kept for three days.
+          gh release list --limit 200 --json tagName,createdAt --jq '.[] | select(.tagName | startswith("reel-")) | select((now - (.createdAt | fromdateiso8601)) > 259200) | .tagName' \
+            | while read -r t; do gh release delete "$t" --yes --cleanup-tag || true; done

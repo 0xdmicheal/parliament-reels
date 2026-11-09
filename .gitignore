@@ -1,0 +1,4 @@
+node_modules/
+parts/
+*.mp4
+spec.json
