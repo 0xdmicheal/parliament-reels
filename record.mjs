@@ -98,7 +98,7 @@ async function devtoolsUrl(profile, chrome) {
 function encoder(fps, file) {
   const proc = spawn(FFMPEG, [
     '-hide_banner', '-loglevel', 'error', '-f', 'image2pipe', '-framerate', String(fps), '-c:v', 'mjpeg', '-i', '-',
-    '-c:v', 'libx264', '-preset', 'medium', '-crf', '17', '-pix_fmt', 'yuv420p', '-r', String(fps),
+    '-c:v', 'libx264', '-preset', 'medium', '-crf', '22', '-tune', 'animation', '-pix_fmt', 'yuv420p', '-r', String(fps),
     '-movflags', '+faststart', '-y', file,
   ], { stdio: ['pipe', 'ignore', 'pipe'] });
   let err = '';
