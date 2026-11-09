@@ -1,5 +1,5 @@
-# Records one Poster Studio video on up to 20 machines at once, joins the pieces and publishes the MP4 as a release.
-# Started by parliament-widget's /api/reel-cloud with inputs { id, spec }; the finished file is the release reel-<id>.
+# Records one Poster Studio video on up to 20 machines at once, joins the pieces and uploads the MP4 to Cloudflare R2.
+# Started by parliament-widget's /api/reel-cloud with inputs { id, spec }; the finished file is <R2 public URL>/<id>/<name>.
 name: reel
 run-name: reel ${{ inputs.id }}
 
@@ -10,7 +10,7 @@ on:
       spec: { description: 'JSON: { items, size, qr, motion, origin }', required: true }
 
 permissions:
-  contents: write
+  contents: read
 
 env:
   TZ: Asia/Ulaanbaatar
@@ -49,11 +49,16 @@ jobs:
         with: { pattern: 'part-*', path: parts }
       - run: command -v ffmpeg || (sudo apt-get update -qq && sudo apt-get install -y -qq --no-install-recommends ffmpeg)
       - run: node reels.mjs join parts reel.mp4
-      - env: { GH_TOKEN: '${{ github.token }}' }
+      # Uploaded to Cloudflare R2 (GitHub's release downloads are very slow from Mongolia). The bucket's lifecycle
+      # rule deletes recordings after three days.
+      - env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          AWS_DEFAULT_REGION: auto
+          AWS_REQUEST_CHECKSUM_CALCULATION: WHEN_REQUIRED
+          AWS_RESPONSE_CHECKSUM_VALIDATION: WHEN_REQUIRED
+          R2_ENDPOINT: https://${{ secrets.R2_ACCOUNT_ID }}.r2.cloudflarestorage.com
+          R2_BUCKET: ${{ vars.R2_BUCKET || 'parliament-reels' }}
         run: |
           name=$(node -e "const s = JSON.parse(process.env.SPEC); process.stdout.write((s.name || 'reel.mp4').replace(/[^A-Za-z0-9._-]/g, '-'))")
-          mv reel.mp4 "$name"
-          gh release create "reel-${{ inputs.id }}" "$name" --title "reel ${{ inputs.id }}" --notes "Recorded by Poster Studio" --latest=false
-          # Recordings are kept for three days.
-          gh release list --limit 200 --json tagName,createdAt --jq '.[] | select(.tagName | startswith("reel-")) | select((now - (.createdAt | fromdateiso8601)) > 259200) | .tagName' \
-            | while read -r t; do gh release delete "$t" --yes --cleanup-tag || true; done
+          aws s3 cp reel.mp4 "s3://$R2_BUCKET/${{ inputs.id }}/$name" --endpoint-url "$R2_ENDPOINT"             --content-type video/mp4 --content-disposition "attachment; filename=\"$name\"" --only-show-errors
