@@ -15,6 +15,9 @@ permissions:
 env:
   TZ: Asia/Ulaanbaatar
   SPEC: ${{ inputs.spec }}
+  # Static ffmpeg (BtbN build, with libx264) instead of apt: apt-get took 17-41 s per machine. Kept in the Actions cache.
+  FFMPEG_BUILD: ffmpeg-n8.1-latest-linux64-gpl-8.1
+  FFMPEG_DIR: /home/runner/ffmpeg
 
 jobs:
   record:
@@ -32,7 +35,11 @@ jobs:
           n=$(node -e "import('./reels.mjs').then(m => console.log(m.plan(JSON.parse(require('fs').readFileSync('spec.json','utf8'))).machines))")
           echo "machines=$n" >> "$GITHUB_OUTPUT"
       - if: matrix.k < fromJSON(steps.mine.outputs.machines)
-        run: command -v ffmpeg || (sudo apt-get update -qq && sudo apt-get install -y -qq --no-install-recommends ffmpeg)
+        id: ffcache
+        uses: actions/cache@v4
+        with: { path: '${{ env.FFMPEG_DIR }}', key: '${{ env.FFMPEG_BUILD }}' }
+      - if: matrix.k < fromJSON(steps.mine.outputs.machines)
+        run: sh ffmpeg.sh "${{ steps.ffcache.outputs.cache-hit }}"
       - if: matrix.k < fromJSON(steps.mine.outputs.machines)
         run: REEL_TIMING=1 node reels.mjs work spec.json ${{ matrix.k }} parts
       - if: matrix.k < fromJSON(steps.mine.outputs.machines)
@@ -47,7 +54,10 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/download-artifact@v4
         with: { pattern: 'part-*', path: parts }
-      - run: command -v ffmpeg || (sudo apt-get update -qq && sudo apt-get install -y -qq --no-install-recommends ffmpeg)
+      - id: ffcache
+        uses: actions/cache/restore@v4
+        with: { path: '${{ env.FFMPEG_DIR }}', key: '${{ env.FFMPEG_BUILD }}' }
+      - run: sh ffmpeg.sh "${{ steps.ffcache.outputs.cache-hit }}"
       - run: node reels.mjs join parts reel.mp4
       # Uploaded to Cloudflare R2 (GitHub's release downloads are very slow from Mongolia). The bucket's lifecycle
       # rule deletes recordings after three days.
